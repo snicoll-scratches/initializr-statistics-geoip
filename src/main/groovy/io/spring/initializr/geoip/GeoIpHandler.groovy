@@ -5,10 +5,13 @@ import java.sql.SQLException
 
 import groovy.util.logging.Slf4j
 import io.searchbox.client.JestClient
+import io.searchbox.client.JestResult
 import io.searchbox.core.Bulk
 import io.searchbox.core.Search
 import io.searchbox.core.SearchResult
+import io.searchbox.core.SearchScroll
 import io.searchbox.core.Update
+import io.searchbox.params.Parameters
 
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.CommandLineRunner
@@ -56,12 +59,11 @@ class GeoIpHandler implements CommandLineRunner {
 	def all = []
 
 	private void process() {
-		int from = 0
 		int size = this.properties.batchSize
-		boolean moreResults = true
-		while (moreResults) {
-			moreResults = handleBatch(from, this.properties.batchSize)
-			from += size
+		SearchResult initialSearch = search(size)
+		String nextScrollId = handleSearchResult(initialSearch)
+		while (nextScrollId) {
+			nextScrollId = handlePage(nextScrollId, size)
 		}
 
 		log.info("Stats")
@@ -73,21 +75,27 @@ class GeoIpHandler implements CommandLineRunner {
 		log.info("no country found $failed")
 	}
 
-	private boolean handleBatch(int from, int size) {
-		log.info("Processing records $from to " + (from + size))
-		def result = search(from, size)
+	private String handlePage(String scrollId, int size) {
+		log.info("Processing next page of $size records")
+		SearchScroll scroll = new SearchScroll.Builder(scrollId, "2m")
+				.setParameter(Parameters.SIZE, size).build();
+		JestResult result = jestClient.execute(scroll)
+		return handleSearchResult(result)
+	}
+
+	private String handleSearchResult(JestResult result) {
 		if (result.isSucceeded()) {
-			def hits = result.getHits(GeoInfo.class)
+			def hits = result.getSourceAsObjectList(GeoInfo.class)
 			total += hits.size()
 			if (hits.size() > 0) {
 				Collection<GeoInfo> updates = []
 				hits.each { i ->
-					if (all.contains(i.source.id)) {
+					if (all.contains(i.id)) {
 						log.error("That idenfifier was already processed! $i.source.id")
 					} else {
-						all << i.source.id
+						all << i.id
 					}
-					def item = handleItem(i.source)
+					def item = handleItem(i)
 					if (item) {
 						updates << item
 					}
@@ -95,14 +103,14 @@ class GeoIpHandler implements CommandLineRunner {
 				if (!this.properties.dryRun) {
 					update(updates)
 				}
-				return true
+				return result.getJsonObject().get("_scroll_id").getAsString();
 			} else {
 				log.info("No more results")
 			}
 		} else {
 			log.error('Search failed ' + result.errorMessage)
 		}
-		return false;
+		return null;
 	}
 
 	private GeoInfo handleItem(GeoInfo info) {
@@ -150,17 +158,17 @@ class GeoIpHandler implements CommandLineRunner {
 		})
 	}
 
-	private SearchResult search(int from, int size) {
+	private SearchResult search(int size) {
 		String query =
-				'{ "from": ' + from + ', ' +
-						'"size": ' + size + ', ' +
-						//'"query": { "filtered": {"filter":{ "missing": {"field": "requestCountry"}}}}, ' +
+				'{ "query": { "filtered": {"filter":{ "missing": {"field": "requestCountry"}}}}, ' +
 						'"sort": [ { "generationTimestamp": {"order": "desc"}}]}'
 
 
 		Search search = new Search.Builder(query)
 				.addIndex("initializr")
 				.addType('request')
+				.setParameter(Parameters.SIZE, size)
+				.setParameter(Parameters.SCROLL, "2m")
 				.build();
 		jestClient.execute(search)
 	}
