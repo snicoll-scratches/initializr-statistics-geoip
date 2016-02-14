@@ -1,0 +1,14 @@
+# GeoIP batch
+
+Extract the ISO country code based on the IP. You need to install first the free
+http://www.ip2nation.com/[ip2nation Mysql database]. The `local` profile is enabled
+by default so you can use that to store the credentials of your local installation,
+something like
+
+```
+spring.datasource.url=jdbc:mysql://localhost:3306/your-db
+spring.datasource.username=user
+spring.datasource.password=secret
+```
+
+See `GeoIpProperties` for more configuration options
